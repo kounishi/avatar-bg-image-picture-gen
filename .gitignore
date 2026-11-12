@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# 出力・作業ファイル
+output/
+work/
+
+# 動作確認用素材（動画・台本・記事URL）は管理しない
+sozai-*/
+
+# エディタ・OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
