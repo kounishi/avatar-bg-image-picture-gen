@@ -61,11 +61,12 @@ def decoder_args(info: dict) -> list:
 
 
 def avatar_layout(info: dict, out_w: int, out_h: int, pos: str = "bottom-right",
-                  height: float = 0.8, margin: float = 0.02):
+                  height: float = 0.8, margin: float = 0.02, offset: int = 0):
     """アバターの配置を決める。
 
     キャラクターの見えている部分（アルファの不透明領域）を基準に、
     pos=bottom-right なら右下隅に着くよう配置し、見えている高さが画面高さ×height になるよう縮小する。
+    offset は左右の隅からさらに内側へずらす量（px。同じ側に複数人を並べるとき用）。
     返り値: {"pos", "scale", "x", "y", "w", "h", "bbox"}（x,y,w,h は縮小後の動画全体の配置、bbox は見えている範囲）
     """
     if not (info["has_video"] and info["has_alpha"]):
@@ -84,11 +85,11 @@ def avatar_layout(info: dict, out_w: int, out_h: int, pos: str = "bottom-right",
         if src[3] < vh * 0.97:   # 全身など下端に余白がある素材は少し浮かせる
             y -= m
         if pos == "bottom-left":
-            x = m - src[0] * sc
+            x = m + offset - src[0] * sc
         elif pos == "center":
             x = out_w / 2 - (src[0] + src[2]) / 2 * sc
         else:
-            x = out_w - m - src[2] * sc
+            x = out_w - m - offset - src[2] * sc
     bbox = None
     if src is not None:
         bbox = [round(x + src[0] * sc), round(y + src[1] * sc), round(x + src[2] * sc), round(y + src[3] * sc)]
@@ -97,10 +98,52 @@ def avatar_layout(info: dict, out_w: int, out_h: int, pos: str = "bottom-right",
     return {"pos": pos, "scale": sc, "x": round(x), "y": round(y), "w": w, "h": h, "bbox": bbox}
 
 
+def group_layouts(avatars: list, out_w: int, out_h: int, height: float, margin: float = 0.02,
+                  scales: list = None, max_width: float = None) -> list:
+    """掛け合い（2〜3人）のアバター配置。avatars の各要素の side（bottom-left / bottom-right）の隅に置き、
+    同じ側に複数人いるときはリストの順に画面端から内側へ横に並べる。
+
+    max_width を指定すると、全員を同じ高さ（画面高さ×height）で並べたときの見えている横幅の合計が
+    画面幅×max_width を超えないよう高さを縮める（中央の解説エリアを確保するため）。
+    こうして決めた大きさを基準（＝1）として、各アバターに scales（0.1〜1.5）を掛ける。
+    """
+    scales = list(scales or [])
+    scales += [1.0] * (len(avatars) - len(scales))
+    srcs = [avatar_source_bbox(av["info"]) for av in avatars]
+    if max_width:
+        widths = [(s[2] - s[0]) / (s[3] - s[1]) * out_h * height for s in srcs if s]
+        if widths and sum(widths) > out_w * max_width:
+            height *= out_w * max_width / sum(widths)
+    gap = round(out_w * margin / 2)
+    used = {"bottom-left": 0, "bottom-right": 0}
+    lays = []
+    for av, k in zip(avatars, scales):
+        side = av["side"]
+        lay = avatar_layout(av["info"], out_w, out_h, pos=side, height=height * k, margin=margin,
+                            offset=used.get(side, 0))
+        if lay and lay.get("bbox") and side in used:
+            b = lay["bbox"]
+            used[side] += b[2] - b[0] + gap
+        if lay:
+            lay["base_height"], lay["user_scale"] = height, k
+        lays.append(lay)
+    return lays
+
+
+_SRC_BBOX_CACHE = {}
+
+
 def avatar_source_bbox(info: dict, samples: int = 6):
-    """透過アバターの不透明領域（元動画の座標）を数フレームの和集合で求める。"""
+    """透過アバターの不透明領域（元動画の座標）を数フレームの和集合で求める（同じ動画は結果を再利用）。"""
     if not (info["has_video"] and info["has_alpha"]):
         return None
+    key = (str(info["path"]), samples)
+    if key not in _SRC_BBOX_CACHE:
+        _SRC_BBOX_CACHE[key] = _avatar_source_bbox(info, samples)
+    return _SRC_BBOX_CACHE[key]
+
+
+def _avatar_source_bbox(info: dict, samples: int):
     import numpy as np
     from PIL import Image
 

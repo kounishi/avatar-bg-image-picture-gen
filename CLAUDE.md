@@ -40,6 +40,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `media.py` — ffmpeg/ffprobe ラッパー。アルファチャンネルからキャラクター輪郭の bbox を検出し、`avatar_layout`（x, y, w, h, scale, bbox）を計算。このレイアウトが slides（文字をアバターと重ならない側に配置）、compose、export XML のすべてで共有される。
 - `slides.py`（Pillow による背景描画）、`thumbnail.py`（瞳・口検出による表情 3 パターンの選択とサムネイル描画）、`export.py`（CSV/JSON/FCPXML/FCP7 XML）、`compose.py`（ffmpeg 合成）、`util.py`（類似度、タイムコード、サイズ解析）。
 
-### 1人 / 2人モードの分岐
+### 1人 / 掛け合い（2〜3人）モードの分岐
 
-`--media` が 2 つなら 2人掛け合いモード。plan.json では 1人モードが `avatar_layout`/`avatar_bbox` を使い、2人モードは `avatars[]`（各要素に `layout`）と `avatar_bboxes` を使い `avatar_layout` は `None`。レイアウト関連を変更するときは両モードと、ショート版 variant（`avatar_layouts` / `avatar_bboxes`）の差し替え処理をすべて追うこと。
+`--media` が 2〜3 つなら掛け合いモード。plan.json では 1人モードが `avatar_layout`/`avatar_bbox` を使い、掛け合いモードは `avatars[]`（各要素に `side` と `layout`）と `avatar_bboxes` を使い `avatar_layout` は `None`。レイアウト関連を変更するときは両モードと、ショート版 variant（`avatar_layouts` / `avatar_bboxes`）の差し替え処理をすべて追うこと。
+
+- `avatars[]` は台本の登場順（`cli._assign_avatars`）。compose/export は `plan["media"]` を `avatars[0]` と同じ動画として扱う（入力 1 本目）ので、`cmd_plan` で `media` を登場順の先頭に合わせている。
+- 配置は `media.group_layouts`：`side`（2人 = 左下・右下、3人 = `cli.TRIO_SIDES` で avtr1 右下・avtr2/3 左下）の隅から同じ側の人を内側へ並べる。3人の場合は横幅の合計が画面幅 × `TRIO_MAX_WIDTH` に収まるよう基準の大きさを自動で縮め、その基準に `--avatar-scales`（0.1〜1.5）を掛ける。2人の場合は自動縮小しない（既存の出力と同じ配置）。
+- slides の中央エリア（`Renderer._duo_area`）と show_plan / chatgpt_prompts は、bbox の中心が画面の左半分か右半分かで左右のグループを判定している。

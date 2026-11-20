@@ -438,7 +438,7 @@ def render_thumbnail(size, channel: str, title: str, avatar, bg_file=None, theme
     # アバターの配置
     av_img, av_pos = None, None
     duo = isinstance(avatar, list)
-    placed = []  # 2人の場合 [(フチつき画像, 位置)]
+    placed = []  # 掛け合い（2〜3人）の場合 [(フチつき画像, 位置)]
     if duo:
         avs = [x for x in avatar if x]
         th_ = int(H * (0.42 if vertical else 0.74))
@@ -561,7 +561,11 @@ def make_thumbnails(plan: dict, out: Path, log=print) -> list:
     channel = t.get("channel", "")
     title = t.get("title") or (plan.get("article") or {}).get("title") or (plan["scenes"][0]["title"] if plan["scenes"] else "")
     at = t.get("avatar_time")
-    infos = [av["info"] for av in plan["avatars"]] if plan.get("avatars") else [plan["media"]]
+    if plan.get("avatars"):  # 掛け合い：動画の画面上の左から順に並べる
+        avs = sorted(plan["avatars"], key=lambda av: ((av.get("layout") or {}).get("bbox") or [0])[0])
+        infos = [av["info"] for av in avs]
+    else:
+        infos = [plan["media"]]
     sets = []
     for k, info in enumerate(infos):
         with tempfile.TemporaryDirectory() as tmp:
@@ -584,7 +588,7 @@ def make_thumbnails(plan: dict, out: Path, log=print) -> list:
             old.unlink()
         ims = []
         for n, key, _ in (EXPRESSIONS if avatars else EXPRESSIONS[:1]):
-            if len(sets_ok) > 1:  # 2人掛け合い：2人とも同じ表情パターン
+            if len(sets_ok) > 1:  # 掛け合い：全員同じ表情パターン
                 av_arg = [x[key][:2] for x in sets_ok]
             else:
                 av = avatars.get(key)

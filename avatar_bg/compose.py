@@ -28,7 +28,7 @@ def compose(plan: dict, out: Path, dest: Path, crf: int = 18, preset: str = "med
     lay = plan.get("avatar_layout")
     tracks = avatar_tracks(plan)
     audio_map = "1:a?"
-    if len(tracks) > 1:  # 2人掛け合い：左下・右下にそれぞれ縮小配置
+    if len(tracks) > 1:  # 掛け合い（2〜3人）：それぞれの配置に縮小して重ねる
         for info, _ in tracks[1:]:
             cmd += [*decoder_args(info), "-i", info["path"]]
         parts, cur = [bg], "bg"

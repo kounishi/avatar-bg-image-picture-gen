@@ -118,7 +118,7 @@ class Renderer:
         self.area = self._duo_area(bbs) if len(bbs) > 1 else self._content_area(plan.get("avatar_bbox"))
 
     def _duo_area(self, bbs):
-        """2人掛け合い：左下・右下のアバターの間（中央）を本文エリアにする。"""
+        """掛け合い（2〜3人）：左下・右下のアバターの間（中央）を本文エリアにする。"""
         W, H, s = self.W, self.H, self.s
         top, bottom = int(H * 0.09), int(H * 0.88)
         if self.H > self.W:  # 縦動画：アバターより上

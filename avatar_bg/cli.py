@@ -43,9 +43,11 @@ def cmd_plan(a) -> Path:
     for p in (*medias, script):
         if not p.exists():
             raise SystemExit(f"ファイルが見つかりません: {p}")
-    if len(medias) > 2:
-        raise SystemExit("アバター動画は 2 つまで指定できます。")
-    duo = len(medias) == 2
+    if len(medias) > 3:
+        raise SystemExit("アバター動画は 3 つまで指定できます。")
+    duo = len(medias) >= 2  # 掛け合い（2人または3人）
+    trio = len(medias) == 3
+    scales = _check_scales(a.avatar_scales, len(medias))
     size = parse_size(a.size)
     name = script.stem if duo else media.stem
     out = Path(a.out or (ROOT / "output" / name)).resolve()
@@ -69,23 +71,30 @@ def cmd_plan(a) -> Path:
     speakers = speakers_of(sentences)
     avatars, audio_src = None, media
     if duo:
-        # 2人掛け合い：話者IDとファイル名を対応づけ、登場順に 左下・右下 に配置
+        # 掛け合い：話者IDとファイル名を対応づけ、登場順に配置
+        #   2人: 左下・右下 / 3人: 1人目（avtr1）が右下、2人目・3人目が左下に画面端から並ぶ
         order = _assign_avatars(medias, speakers)
         infos = {m: (info if m == media else probe(m)) for m in medias}
+        sides = TRIO_SIDES if trio else DUO_SIDES
         avatars = [{"path": str(m), "speaker": sp, "side": side, "info": infos[m]}
-                   for (m, sp), side in zip(order, ("bottom-left", "bottom-right"))]
-        for av in avatars:
-            log(f"  アバター {'左下' if av['side'] == 'bottom-left' else '右下'}: {Path(av['path']).name}"
+                   for (m, sp), side in zip(order, sides)]
+        # 合成・XML では plan["media"] を1本目のアバターとして扱うので、登場順の先頭に合わせる
+        media, info = order[0][0], infos[order[0][0]]
+        audio_src = media
+        for k, av in enumerate(avatars):
+            log(f"  アバター{k + 1} {_side_label(avatars, k)}: {Path(av['path']).name}"
                 + (f"（話者 {av['speaker']}）" if av["speaker"] else ""))
         fps_ = [audio_fingerprint(m, min(30.0, info["duration"] / 3)) for m in medias]
         if fps_[0] and len(set(fps_)) == 1:
-            log("  2つの動画には同じ会話音声が入っています（1本分の音声を使います）")
+            log(f"  {len(medias)}つの動画には同じ会話音声が入っています（1本分の音声を使います）")
         else:
             audio_src = work / "mixed_audio.wav"
             log("  各動画の音声を1本にミックスします")
             mix_audio(medias, audio_src)
     elif speakers:
-        log(f"  ※ 台本に話者が {len(speakers)} 人います。2人掛け合いにする場合は --media に動画を2つ指定してください")
+        log(f"  ※ 台本に話者が {len(speakers)} 人います。掛け合いにする場合は --media に話者の数（2〜3）だけ動画を指定してください")
+    if scales and not duo:
+        log("  ※ --avatar-scales は掛け合い（2〜3人）用です。1人の場合は --avatar-height で調整してください")
 
     article = None
     if a.url:
@@ -112,7 +121,8 @@ def cmd_plan(a) -> Path:
         if audio_src != media:
             plan["audio_path"] = str(audio_src)
         plan["avatar_layout"] = plan["avatar_bbox"] = None
-        lays = _duo_layouts(avatars, size, a.duo_avatar_height, a.avatar_margin)
+        plan["avatar_scales"] = scales
+        lays = _multi_layouts(avatars, size, a, scales)
         plan["avatar_bboxes"] = [(l or {}).get("bbox") for l in lays]
         for av, lay in zip(avatars, lays):
             av["layout"] = lay
@@ -124,7 +134,7 @@ def cmd_plan(a) -> Path:
         # ショート動画版：同じシーン・タイミングで縦長にレイアウトし直す
         ssize = (1080, 1920)
         if duo:
-            lays = _duo_layouts(avatars, ssize, a.shorts_duo_avatar_height, a.avatar_margin)
+            lays = _multi_layouts(avatars, ssize, a, scales)
             plan["variants"].append({"name": "shorts", "size": list(ssize), "avatar_layout": None,
                                      "avatar_bbox": None, "avatar_layouts": lays,
                                      "avatar_bboxes": [(l or {}).get("bbox") for l in lays]})
@@ -156,13 +166,49 @@ def _assign_avatars(medias: list, speakers: list) -> list:
             left.remove(hit)
             order.append((hit, sp))
     order += [(m, None) for m in left]  # 台本に話者がない／対応しない動画は指定順
-    return order[:2]
+    return order[:len(medias)]
 
 
-def _duo_layouts(avatars: list, size, height: float, margin: float) -> list:
-    from .media import avatar_layout
+DUO_SIDES = ("bottom-left", "bottom-right")
+TRIO_SIDES = ("bottom-right", "bottom-left", "bottom-left")  # avtr1 は右、avtr2・avtr3 は左（avtr2 が画面端側）
+# 3人掛け合い：基準の大きさで並べたときのアバターの横幅の合計の上限（画面幅に対する割合）
+TRIO_MAX_WIDTH = 0.42    # 横動画（残りの中央に解説を表示）
+TRIO_MAX_WIDTH_V = 0.92  # 縦動画（3人を下部に並べる）
 
-    return [avatar_layout(av["info"], *size, pos=av["side"], height=height, margin=margin) for av in avatars]
+
+def _side_label(avatars: list, k: int) -> str:
+    side = avatars[k]["side"]
+    same = [i for i, av in enumerate(avatars) if av["side"] == side]
+    label = "左下" if side == "bottom-left" else "右下"
+    if len(same) > 1:
+        label += "（画面端側）" if same.index(k) == 0 else "（内側）"
+    return label
+
+
+def _check_scales(scales, n: int) -> list:
+    """--avatar-scales の検証。基準の大きさ（＝1）に対する倍率を 0.1〜1.5 で、アバターの数まで指定できる。"""
+    if not scales:
+        return []
+    if len(scales) > max(n, 1):
+        raise SystemExit(f"--avatar-scales はアバターの数（{n}）までしか指定できません。")
+    for v in scales:
+        if not 0.1 <= v <= 1.5:
+            raise SystemExit(f"--avatar-scales の値は 0.1〜1.5 で指定してください（指定値 {v}）。")
+    return list(scales) + [1.0] * (n - len(scales))
+
+
+def _multi_layouts(avatars: list, size, a, scales: list) -> list:
+    """掛け合いのアバター配置。3人の場合は中央の解説エリアを確保するよう基準の大きさを自動で縮める。"""
+    from .media import group_layouts
+
+    vertical = size[1] > size[0]
+    if len(avatars) >= 3:
+        height = a.shorts_trio_avatar_height if vertical else a.trio_avatar_height
+        max_width = TRIO_MAX_WIDTH_V if vertical else TRIO_MAX_WIDTH
+    else:
+        height = a.shorts_duo_avatar_height if vertical else a.duo_avatar_height
+        max_width = None
+    return group_layouts(avatars, *size, height=height, margin=a.avatar_margin, scales=scales, max_width=max_width)
 
 
 def show_plan(plan: dict, out: Path):
@@ -175,15 +221,21 @@ def show_plan(plan: dict, out: Path):
     log("   内訳: " + " / ".join(f"{TYPE_JP.get(k, k)} {v}枚" for k, v in c.items()))
     log(f" 動画サイズ {plan['size'][0]}x{plan['size'][1]} / {plan['fps']}fps / 長さ {fmt_jp(plan['duration'])}"
         f" / タイミング推定: {'音声認識' if plan['align_method'] == 'whisper' else '無音検出＋文字数比'}")
-    for av in plan.get("avatars") or []:
+    avs = plan.get("avatars") or []
+    for k, av in enumerate(avs):
         lay = av.get("layout") or {}
         b = lay.get("bbox") or [0, 0, 0, 0]
-        log(f" アバター {'左下' if av['side'] == 'bottom-left' else '右下'} {Path(av['path']).stem} / "
-            f"縮小率 {lay.get('scale', 1) * 100:.0f}% / 表示範囲 x={b[0]}〜{b[2]}, y={b[1]}〜{b[3]}")
-    if plan.get("avatars"):
-        x0 = max(b[2] for b in plan["avatar_bboxes"] if b and (b[0] + b[2]) / 2 < plan["size"][0] / 2)
-        x1 = min(b[0] for b in plan["avatar_bboxes"] if b and (b[0] + b[2]) / 2 >= plan["size"][0] / 2)
-        log(f"   解説は2人の間の中央（x={x0}〜{x1}）に表示します")
+        log(f" アバター{k + 1} {_side_label(avs, k)} {Path(av['path']).stem} / "
+            f"縮小率 {lay.get('scale', 1) * 100:.0f}%（サイズ指定 {lay.get('user_scale', 1):g}）/ "
+            f"表示範囲 x={b[0]}〜{b[2]}, y={b[1]}〜{b[3]}")
+    if avs:
+        W = plan["size"][0]
+        bbs = [b for b in plan["avatar_bboxes"] if b]
+        x0 = max([b[2] for b in bbs if (b[0] + b[2]) / 2 < W / 2], default=0)
+        x1 = min([b[0] for b in bbs if (b[0] + b[2]) / 2 >= W / 2], default=W)
+        log(f"   解説は{len(avs)}人の間の中央（x={x0}〜{x1}、画面幅の {(x1 - x0) / W * 100:.0f}%）に表示します")
+        if x1 - x0 < W * 0.35:
+            log("   ※ 解説エリアが狭くなっています。--avatar-scales を小さくすると広がります")
     if plan.get("avatar_bbox"):
         b = plan["avatar_bbox"]
         lay = plan.get("avatar_layout") or {}
@@ -215,8 +267,10 @@ def _write_prompts(plan: dict, out: Path):
     side = ""
     bbs = [x for x in plan.get("avatar_bboxes") or [] if x]
     if len(bbs) > 1:
-        side = (f"画面の左下と右下（それぞれ横幅の約{round(max(x[2] - x[0] for x in bbs) / W * 100)}%・"
-                f"高さの下側約{round((H - min(x[1] for x in bbs)) / H * 100)}%）は2人のアバターを重ねるため、"
+        lw = max([x[2] for x in bbs if (x[0] + x[2]) / 2 < W / 2], default=0)
+        rw = W - min([x[0] for x in bbs if (x[0] + x[2]) / 2 >= W / 2], default=W)
+        side = (f"画面の左下（横幅の約{round(lw / W * 100)}%）と右下（横幅の約{round(rw / W * 100)}%）の"
+                f"高さの下側約{round((H - min(x[1] for x in bbs)) / H * 100)}%は{len(bbs)}人のアバターを重ねるため、"
                 "主要な要素は中央に置いてください。")
     elif b:
         side = "画面右側" if (b[0] + b[2]) / 2 > W / 2 else "画面左側"
@@ -247,7 +301,7 @@ def cmd_render(a, out: Path = None):
     for v in plan.get("variants", []):
         vplan = json.loads(json.dumps(plan))
         vplan.update({k: v[k] for k in ("size", "avatar_layout", "avatar_bbox")})
-        if vplan.get("avatars"):  # 2人掛け合い：縦画面用の配置に差し替え
+        if vplan.get("avatars"):  # 掛け合い：縦画面用の配置に差し替え
             for av, lay in zip(vplan["avatars"], v.get("avatar_layouts") or []):
                 av["layout"] = lay
             vplan["avatar_bboxes"] = v.get("avatar_bboxes")
@@ -355,7 +409,7 @@ def build_parser():
     def plan_args(sp):
         sp.add_argument("--media", "-m", required=True, nargs="+",
                         help="音声＋アバター合成ファイル（mov / mp4 / webm / m4a など）。"
-                             "2人掛け合いの場合は2つ指定（台本の話者IDを含むファイル名なら自動で対応づけ）")
+                             "掛け合いの場合は話者の数（2〜3）だけ指定（台本の話者IDを含むファイル名なら自動で対応づけ）")
         sp.add_argument("--script", "-s", required=True, help="シナリオテキストファイル")
         sp.add_argument("--url", "-u", help="元記事のURL")
         sp.add_argument("--size", default="1920x1080", help="動画サイズ（既定 1920x1080。4k / shorts / 1280x720 なども可）")
@@ -388,6 +442,14 @@ def build_parser():
                         help="2人掛け合いのアバターの高さ＝画面高さ×この値（既定 0.5。1人の場合は --avatar-height）")
         sp.add_argument("--shorts-duo-avatar-height", type=float, default=0.3,
                         help="2人掛け合いのショート版のアバターの高さ（既定 0.3）")
+        sp.add_argument("--trio-avatar-height", type=float, default=0.45,
+                        help="3人掛け合いのアバターの高さの上限＝画面高さ×この値（既定 0.45。"
+                             "中央の解説エリアを確保するよう自動で縮めた大きさが基準＝1 になる）")
+        sp.add_argument("--shorts-trio-avatar-height", type=float, default=0.26,
+                        help="3人掛け合いのショート版のアバターの高さの上限（既定 0.26）")
+        sp.add_argument("--avatar-scales", type=float, nargs="+", metavar="倍率",
+                        help="掛け合いの各アバターの大きさ（基準＝1 に対する倍率 0.1〜1.5）。"
+                             "アバター1 2 3 の順に指定（例: --avatar-scales 1.2 0.9 0.9）。省略したアバターは 1")
         sp.add_argument("--channel", default=DEFAULT_CHANNEL, help=f"サムネイルのチャンネル名（既定 {DEFAULT_CHANNEL}）")
         thumb_args(sp)
 
