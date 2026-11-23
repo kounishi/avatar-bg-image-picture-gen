@@ -175,11 +175,13 @@ class Renderer:
         h = max(4, int(6 * s))
         d.rectangle((0, self.H - h, self.W, self.H), fill=th["sub"] + (60,))
         d.rectangle((0, self.H - h, int(self.W * scene["end"] / max(self.duration, 0.01)), self.H), fill=th["accent"])
-        src = self.article.get("domain")
-        if src:
-            # ショートは下部が説明文で隠れるので上部に表示
-            y = int(self.H * 0.075) if self.H > self.W else self.H - h - int(44 * s)
-            d.text((self.area[0], y), f"出典: {src}", font=font(int(22 * s), False), fill=th["sub"])
+
+    def _credit_of(self, scene: dict) -> str:
+        """記事内画像の引用元（plan.json のシーンの image_credit。古い plan.json は記事情報から探す）。"""
+        if "image_credit" in scene:
+            return scene["image_credit"] or ""
+        return next((im.get("credit", "") for im in self.article.get("images") or []
+                     if im.get("file") == scene.get("image")), "")
 
     def render(self, scene: dict, custom: Path = None) -> Image.Image:
         if custom:
@@ -309,8 +311,20 @@ class Renderer:
             bx, by, bw, bh = x0, top + ih + gap, rw, rh - ih - gap
         else:
             iw, ih = rw, rh
-        pic = contain(flatten(src), iw, ih)
-        px, py = x0 + (iw - pic.width) // 2, top + (ih - pic.height) // 2
+        # 引用元は画像のすぐ下に表示する。画像の下にある空き（下に箇条書きがあればそのすき間、
+        # 画像が一番下なら解説エリアより下の旧「出典」表示の場所）に収まらない分だけ画像を縮める
+        credit = self._credit_of(scene)
+        cf = font(int(24 * s), False)
+        ch = int(40 * s) if credit else 0
+        if bullets and by > top:          # 上下配置：箇条書きとのすき間
+            room = gap
+        elif self.W > self.H:             # 横動画で画像が一番下：プログレスバーの上まで
+            room = self.H - max(4, int(6 * s)) - int(8 * s) - y1
+        else:                             # 縦動画：下はアバター・説明文があるので使わない
+            room = 0
+        reserve = max(0, ch - room)
+        pic = contain(flatten(src), iw, ih - reserve)
+        px, py = x0 + (iw - pic.width) // 2, top + (ih - reserve - pic.height) // 2
         shadow = Image.new("RGBA", im.size, (0, 0, 0, 0))
         ImageDraw.Draw(shadow).rounded_rectangle((px + 8, py + 14, px + pic.width + 8, py + pic.height + 14),
                                                  radius=int(16 * s), fill=(0, 0, 0, 150))
@@ -320,6 +334,13 @@ class Renderer:
         im.paste(pic, (px, py), mask)
         im = im.convert("RGB")
         d = ImageDraw.Draw(im, "RGBA")
+        if credit:  # 画像の右下すぐ下に「（引用元：○○）」
+            while cf.size > int(14 * s) and d.textlength(credit, font=cf) > max(pic.width, int(iw * 0.9)):
+                cf = font(cf.size - 2, False)
+            tw = d.textlength(credit, font=cf)
+            tx = max(x0, min(px + pic.width - tw, x0 + iw - tw))
+            d.text((tx, py + pic.height + int(8 * s)), credit, font=cf, fill=self.th["text"],
+                   stroke_width=max(1, int(2 * s)), stroke_fill=self.th["bg1"])
         if bullets:
             self._bullets(d, bullets, bx, by, bw, bh, max_size=36)
         self._footer(im, scene)

@@ -20,6 +20,8 @@ DROP_SELECTORS = [
     "header .site-header", ".sns", ".share", ".social", ".related", ".ad", ".ads", ".advertisement",
     ".breadcrumb", ".comments", "#comments", ".toc", "#toc", ".author-box", ".sidebar",
 ]
+# 画像のすぐ下の引用元表記：「（引用元:NEXCO中日本）」「（出典：警察庁）」「引用元：○○」など
+CREDIT = re.compile(r"^[（(]?\s*(引用元|出典|出所|画像出典|画像提供|写真提供|画像|写真|提供)\s*[:：]\s*(.{1,60}?)\s*[）)]?$")
 SKIP_IMG = re.compile(r"(logo|icon|avatar|emoji|sprite|badge|banner|spacer|pixel|gravatar|1x1|loading)", re.I)
 
 
@@ -43,6 +45,19 @@ def _img_src(img, base: str):
         else:
             cands.append(v)
     return urljoin(base, cands[0]) if cands else None
+
+
+def _credit(following: list) -> str:
+    """画像の直後（キャプション・段落）にある引用元表記を「（引用元：○○）」の形で返す。なければ空文字。"""
+    for x in following:
+        if x["type"] == "image":
+            break
+        if x["type"] not in ("para", "caption"):
+            continue
+        m = CREDIT.match(x["text"].strip())
+        if m:
+            return f"（{m.group(1)}：{m.group(2).strip()}）"
+    return ""
 
 
 def fetch_article(url: str, img_dir: Path, min_w: int = 400, min_h: int = 250, log=print) -> dict:
@@ -127,6 +142,7 @@ def fetch_article(url: str, img_dir: Path, min_w: int = 400, min_h: int = 250, l
         nxt = [x["text"] for x in blocks[i + 1:i + 4] if x["type"] in ("para", "caption")][:2]
         caption = next((x["text"] for x in blocks[i + 1:i + 2] if x["type"] == "caption"), "")
         images.append({"src": src, "alt": b["alt"], "heading": heading, "caption": caption,
+                       "credit": _credit(blocks[i + 1:i + 3]),
                        "context": " ".join([heading, b["alt"], caption, prev, *nxt]), "order": i})
     if og_image and og_image not in seen:
         images.append({"src": urljoin(url, og_image), "alt": "アイキャッチ", "heading": title, "caption": "",

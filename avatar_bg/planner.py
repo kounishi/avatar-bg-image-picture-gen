@@ -176,6 +176,7 @@ def _assign_images(scenes, images, opts):
                 score = 1.0 if s["type"] == "title" else score * 0.5
             pairs.append((score, s["index"], im["file"]))
     pairs.sort(reverse=True)
+    credits = {im["file"]: im.get("credit", "") for im in images}
     used_img, used_scene, n = set(), set(), 0
     for score, idx, f in pairs:
         if f in used_img or idx in used_scene:
@@ -185,6 +186,7 @@ def _assign_images(scenes, images, opts):
             sc["image"], sc["image_score"] = f, round(score, 3)
         elif score >= opts.image_threshold and n < opts.max_article_images:
             sc["type"], sc["image"], sc["image_score"] = "article_image", f, round(score, 3)
+            sc["image_credit"] = credits.get(f, "")  # 画像の下に表示する引用元（plan.json で編集可）
             n += 1
         else:
             continue
